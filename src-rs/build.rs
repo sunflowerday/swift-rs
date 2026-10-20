@@ -314,10 +314,16 @@ impl SwiftLinker {
                 self.visionos_min_version.as_deref(),
             );
 
-            // swift build outputs here regardless of target platform
-            let search_path = out_path
-                .join(format!("{}-apple-macosx", arch))
-                .join(configuration);
+            // Where the products land depends on SwiftPM's build system: the
+            // native one writes <arch>-apple-macosx/<configuration>, swiftbuild
+            // (the default since Swift 6.4) writes out/Products/<Configuration>.
+            // Ask SwiftPM rather than guess; the native layout is the fallback.
+            let search_path = swift_bin_path(&package.path, configuration, arch, &out_path)
+                .unwrap_or_else(|| {
+                    out_path
+                        .join(format!("{}-apple-macosx", arch))
+                        .join(configuration)
+                });
 
             command
                 // Build the package (duh)
@@ -417,6 +423,35 @@ fn link_clang_rt(rust_target: &RustTarget) {
         rust_target.sdk.clang_lib_extension()
     );
     println!("cargo:rustc-link-search={}", clang_link_search_path());
+}
+
+#[cfg(feature = "build")]
+fn swift_bin_path(
+    package_path: &Path,
+    configuration: &str,
+    arch: &str,
+    build_path: &Path,
+) -> Option<PathBuf> {
+    let output = Command::new("swift")
+        .current_dir(package_path)
+        .args([
+            "build",
+            "--show-bin-path",
+            "-c",
+            configuration,
+            "--arch",
+            arch,
+        ])
+        .arg("--build-path")
+        .arg(build_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let path = stdout.lines().last()?.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 fn clang_link_search_path() -> String {
